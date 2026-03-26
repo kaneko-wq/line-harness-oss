@@ -13,6 +13,8 @@ import { registerGetFormSubmissions } from "./get-form-submissions.js";
 import { registerGetLinkClicks } from "./get-link-clicks.js";
 import { registerAccountSummary } from "./account-summary.js";
 import { registerListCrmObjects } from "./list-crm-objects.js";
+import { registerManageAdPlatforms } from "./manage-ad-platforms.js";
+import { registerGetConversionLogs } from "./get-conversion-logs.js";
 
 export function registerAllTools(server: McpServer): void {
   registerSendMessage(server);
@@ -29,4 +31,6 @@ export function registerAllTools(server: McpServer): void {
   registerGetLinkClicks(server);
   registerAccountSummary(server);
   registerListCrmObjects(server);
+  registerManageAdPlatforms(server);
+  registerGetConversionLogs(server);
 }

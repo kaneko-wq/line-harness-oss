@@ -10,6 +10,7 @@ export { BroadcastsResource } from './resources/broadcasts.js'
 export { RichMenusResource } from './resources/rich-menus.js'
 export { TrackedLinksResource } from './resources/tracked-links.js'
 export { FormsResource } from './resources/forms.js'
+export { AdPlatformsResource } from './resources/ad-platforms.js'
 
 // All types
 export type {
@@ -53,3 +54,10 @@ export type {
   UpdateFormInput,
   FormSubmission,
 } from './types.js'
+
+export type {
+  AdPlatform,
+  AdConversionLog,
+  CreateAdPlatformInput,
+  UpdateAdPlatformInput,
+} from './resources/ad-platforms.js'

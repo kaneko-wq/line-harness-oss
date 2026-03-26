@@ -505,3 +505,38 @@ CREATE TABLE IF NOT EXISTS automation_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_automation_logs_automation ON automation_logs (automation_id);
+
+-- ============================================================
+-- Ad Platform Configuration
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ad_platforms (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  display_name TEXT,
+  config       TEXT NOT NULL DEFAULT '{}',
+  is_active    INTEGER DEFAULT 1,
+  created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- ============================================================
+-- Ad Conversion Logs
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ad_conversion_logs (
+  id                  TEXT PRIMARY KEY,
+  ad_platform_id      TEXT NOT NULL,
+  friend_id           TEXT NOT NULL,
+  conversion_point_id TEXT,
+  event_name          TEXT NOT NULL,
+  click_id            TEXT,
+  click_id_type       TEXT,
+  status              TEXT DEFAULT 'pending',
+  request_body        TEXT,
+  response_body       TEXT,
+  error_message       TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_conversion_logs_platform ON ad_conversion_logs (ad_platform_id);
+CREATE INDEX IF NOT EXISTS idx_ad_conversion_logs_friend ON ad_conversion_logs (friend_id);
+CREATE INDEX IF NOT EXISTS idx_ad_conversion_logs_status ON ad_conversion_logs (status);

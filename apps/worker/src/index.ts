@@ -32,6 +32,7 @@ import { automations } from './routes/automations.js';
 import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
 import { forms } from './routes/forms.js';
+import { adPlatforms } from './routes/ad-platforms.js';
 
 export type Env = {
   Bindings: {
@@ -44,6 +45,7 @@ export type Env = {
     LINE_LOGIN_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_SECRET: string;
     WORKER_URL: string;
+    X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
   };
 };
 
@@ -82,6 +84,7 @@ app.route('/', automations);
 app.route('/', richMenus);
 app.route('/', trackedLinks);
 app.route('/', forms);
+app.route('/', adPlatforms);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
