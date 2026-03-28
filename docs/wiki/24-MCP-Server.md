@@ -39,32 +39,46 @@ node dist/index.js
 
 ---
 
-## ツール一覧 (17個)
+## ツール一覧 (25個)
 
 ### 読み取り系
 
-| ツール | 説明 | パラメータ |
-|--------|------|-----------|
-| `account_summary` | アカウント概要 | `accountId?` |
-| `list_friends` | 友だち一覧 | `limit?`, `offset?`, `tagId?` |
-| `get_friend_detail` | 友だち詳細 | `friendId` |
-| `get_form_submissions` | フォーム回答 | `formId` |
-| `get_link_clicks` | リンククリック分析 | `linkId` |
-| `list_crm_objects` | CRMオブジェクト一覧 | `objectType` (scenarios/forms/tags/rich_menus/tracked_links/broadcasts) |
+| ツール | 説明 |
+|--------|------|
+| `list_friends` | 友だち一覧（名前検索・タグ・メタデータフィルタ） |
+| `get_friend_detail` | 友だち詳細 |
+| `get_form_submissions` | フォーム回答取得 |
+| `get_link_clicks` | リンククリック分析 |
+| `get_conversion_logs` | コンバージョンログ |
+| `account_summary` | アカウント概要 |
+| `list_crm_objects` | CRMオブジェクト汎用一覧 |
 
 ### 書き込み系
 
-| ツール | 説明 | パラメータ |
-|--------|------|-----------|
-| `send_message` | 個別メッセージ送信 | `friendId`, `content`, `messageType?` |
-| `broadcast` | 一斉配信 | `title`, `content`, `targetType?`, `targetTagId?` |
-| `create_scenario` | シナリオ作成 | `name`, `triggerType`, `steps[]` |
-| `enroll_in_scenario` | シナリオ登録 | `friendId`, `scenarioId` |
-| `manage_tags` | タグ管理 | `action` (create/delete/add/remove), `name?`, `friendId?`, `tagId?` |
-| `manage_staff` | スタッフ管理 | `action` (create/list/get/update/delete/regenerate_key/me), `name?`, `role?`, `staffId?` |
-| `create_form` | フォーム作成 | `name`, `fields[]` |
-| `create_rich_menu` | リッチメニュー作成 | `name`, `areas[]`, `chatBarText?` |
-| `create_tracked_link` | トラッキングリンク作成 | `name`, `originalUrl`, `tagId?`, `scenarioId?` |
+| ツール | 説明 |
+|--------|------|
+| `send_message` | テキスト・画像・Flex送信 |
+| `broadcast` | 一斉配信 |
+| `create_scenario` | シナリオ作成 |
+| `enroll_in_scenario` | シナリオ登録 |
+| `create_form` | フォーム作成 |
+| `create_rich_menu` | リッチメニュー作成（画像対応） |
+| `create_tracked_link` | トラッキングリンク作成 |
+| `upload_image` | 画像アップロード |
+
+### 管理系
+
+| ツール | 説明 |
+|--------|------|
+| `manage_friends` | 友だち管理（count, metadata, richMenu） |
+| `manage_tags` | タグCRUD + 友だちへの付け外し |
+| `manage_scenarios` | シナリオ管理（CRUD + ステップCRUD） |
+| `manage_broadcasts` | 配信管理（CRUD + セグメント配信） |
+| `manage_rich_menus` | リッチメニュー管理（list, delete, default） |
+| `manage_forms` | フォーム管理（CRUD） |
+| `manage_tracked_links` | トラッキングリンク管理（list, delete） |
+| `manage_staff` | スタッフ管理 |
+| `manage_ad_platforms` | 広告プラットフォーム管理 |
 
 ### Resources (MCP Resources)
 
