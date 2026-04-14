@@ -7,42 +7,43 @@ interface DashboardData {
   friends: { total: number; active: number; newThisWeek: number }
   messages: { receivedToday: number; sentToday: number }
   scenarios: { active: number }
-  recentActivity: Array<{ action: string; user_email: string; resource_type: string; detail: string; created_at: string }>
+  recentActivity: { action: string; user_email: string; detail: string; created_at: string }[]
 }
 
-interface TrendPoint {
+interface FriendTrend {
   date: string
   following_count: number
+  total_count: number
   account_name: string
 }
 
 interface ScoringRule {
   id: string
   name: string
-  event_type: string
-  score_value: number
-  is_active: number
+  eventType: string
+  scoreValue: number
+  isActive: boolean
 }
 
 interface Permissions {
   role: string
   canEdit: boolean
   canDelete: boolean
-  canManageSettings: boolean
 }
 
 function fetchApi(path: string) {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787'
-  const token = typeof window !== 'undefined' ? localStorage.getItem('lh_api_key') || '' : ''
-  return fetch(apiUrl + path, {
-    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
+  return fetch('https://line-crm-worker.kaneko-845.workers.dev' + path, {
+    headers: {
+      'Authorization': 'Bearer ' + (localStorage.getItem('lh_api_key') || ''),
+      'Content-Type': 'application/json',
+    },
   }).then(r => r.json())
 }
 
 export default function AnalyticsPage() {
   const { selectedAccountId } = useAccount()
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
-  const [trends, setTrends] = useState<TrendPoint[]>([])
+  const [trends, setTrends] = useState<FriendTrend[]>([])
   const [rules, setRules] = useState<ScoringRule[]>([])
   const [permissions, setPermissions] = useState<Permissions | null>(null)
   const [loading, setLoading] = useState(true)
@@ -50,39 +51,40 @@ export default function AnalyticsPage() {
   useEffect(() => {
     setLoading(true)
     const acctParam = selectedAccountId ? '?lineAccountId=' + selectedAccountId : ''
+    const acctParam2 = selectedAccountId ? '&lineAccountId=' + selectedAccountId : ''
+
     Promise.allSettled([
       fetchApi('/api/analytics/dashboard' + acctParam),
-      fetchApi('/api/analytics/friend-trends?days=30' + (selectedAccountId ? '&lineAccountId=' + selectedAccountId : '')),
+      fetchApi('/api/analytics/friend-trends?days=30' + acctParam2),
       fetchApi('/api/scoring-rules'),
       fetchApi('/api/users/me/permissions'),
-    ]).then(([dashRes, trendRes, rulesRes, permRes]) => {
-      if (dashRes.status === 'fulfilled' && dashRes.value.success) setDashboard(dashRes.value.data)
-      if (trendRes.status === 'fulfilled' && trendRes.value.success) setTrends(trendRes.value.data)
-      if (rulesRes.status === 'fulfilled' && rulesRes.value.success) setRules(rulesRes.value.data)
-      if (permRes.status === 'fulfilled' && permRes.value.success) setPermissions(permRes.value.data)
+    ]).then(([dRes, tRes, sRes, pRes]) => {
+      if (dRes.status === 'fulfilled' && dRes.value.success) setDashboard(dRes.value.data)
+      if (tRes.status === 'fulfilled' && tRes.value.success) setTrends(tRes.value.data)
+      if (sRes.status === 'fulfilled' && sRes.value.success) setRules(sRes.value.data)
+      if (pRes.status === 'fulfilled' && pRes.value.success) setPermissions(pRes.value.data)
       setLoading(false)
     })
   }, [selectedAccountId])
 
   if (loading) return <div className="p-8 text-center text-gray-400">読み込み中...</div>
 
-  const maxCount = Math.max(...trends.map(t => t.following_count), 1)
+  const maxFollowing = Math.max(...trends.map(t => t.following_count), 1)
 
   return (
     <div>
+      {/* Header */}
       <div className="mb-6">
         <h1 className="text-xl font-bold text-gray-900">分析・レポート</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          {permissions ? 'ロール: ' + permissions.role : ''}
-        </p>
+        <p className="text-sm text-gray-500 mt-1">{permissions ? 'ロール: ' + permissions.role : ''}</p>
       </div>
 
-      {/* KPI カード */}
+      {/* KPI Cards */}
       {dashboard && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
           <div className="bg-white rounded-lg border p-4">
             <p className="text-xs text-gray-500">友だち（有効）</p>
-            <p className="text-2xl font-bold" style={{color:'#06C755'}}>{dashboard.friends.active}</p>
+            <p className="text-2xl font-bold" style={{ color: '#06C755' }}>{dashboard.friends.active}</p>
           </div>
           <div className="bg-white rounded-lg border p-4">
             <p className="text-xs text-gray-500">今週の新規追加</p>
@@ -99,7 +101,7 @@ export default function AnalyticsPage() {
         </div>
       )}
 
-      {/* 友だち数推移グラフ（CSSバーチャート）*/}
+      {/* Friend Trends Chart */}
       <div className="bg-white rounded-lg border p-6 mb-8">
         <h2 className="text-sm font-semibold text-gray-800 mb-4">友だち数推移（過去30日）</h2>
         {trends.length === 0 ? (
@@ -111,9 +113,9 @@ export default function AnalyticsPage() {
                 <div
                   className="w-full rounded-t"
                   style={{
-                    height: Math.max(4, (t.following_count / maxCount) * 140) + 'px',
+                    height: Math.max(4, (t.following_count / maxFollowing) * 140) + 'px',
                     backgroundColor: '#06C755',
-                    opacity: 0.7 + (i / trends.length) * 0.3
+                    opacity: 0.7 + (i / trends.length) * 0.3,
                   }}
                   title={t.date + ': ' + t.following_count + '人'}
                 />
@@ -126,8 +128,8 @@ export default function AnalyticsPage() {
         )}
       </div>
 
+      {/* Scoring Rules & Activity Log */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* スコアリングルール */}
         <div className="bg-white rounded-lg border p-6">
           <h2 className="text-sm font-semibold text-gray-800 mb-4">スコアリングルール</h2>
           {rules.length === 0 ? (
@@ -138,10 +140,10 @@ export default function AnalyticsPage() {
                 <div key={r.id} className="flex items-center justify-between py-2 border-b last:border-0">
                   <div>
                     <p className="text-sm font-medium text-gray-900">{r.name}</p>
-                    <p className="text-xs text-gray-400">{r.event_type}</p>
+                    <p className="text-xs text-gray-400">{r.eventType}</p>
                   </div>
-                  <span className={'text-sm font-bold ' + (r.score_value >= 0 ? 'text-green-600' : 'text-red-600')}>
-                    {r.score_value >= 0 ? '+' : ''}{r.score_value}pt
+                  <span className={'text-sm font-bold ' + (r.scoreValue >= 0 ? 'text-green-600' : 'text-red-600')}>
+                    {r.scoreValue >= 0 ? '+' : ''}{r.scoreValue}pt
                   </span>
                 </div>
               ))}
@@ -149,12 +151,9 @@ export default function AnalyticsPage() {
           )}
         </div>
 
-        {/* 最近の操作ログ */}
         <div className="bg-white rounded-lg border p-6">
           <h2 className="text-sm font-semibold text-gray-800 mb-4">最近の操作ログ</h2>
-          {!dashboard?.recentActivity?.length ? (
-            <p className="text-sm text-gray-400">操作ログはまだありません</p>
-          ) : (
+          {dashboard?.recentActivity?.length ? (
             <div className="space-y-2">
               {dashboard.recentActivity.map((log, i) => (
                 <div key={i} className="py-2 border-b last:border-0">
@@ -166,6 +165,8 @@ export default function AnalyticsPage() {
                 </div>
               ))}
             </div>
+          ) : (
+            <p className="text-sm text-gray-400">操作ログはまだありません</p>
           )}
         </div>
       </div>
