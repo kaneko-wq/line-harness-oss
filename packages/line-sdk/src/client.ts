@@ -154,6 +154,18 @@ export class LineClient {
     await this.pushMessage(to, [{ type: 'flex', altText, contents }]);
   }
 
+  async pushImageMessage(
+    to: string,
+    originalContentUrl: string,
+    previewImageUrl?: string,
+  ): Promise<void> {
+    await this.pushMessage(to, [{
+      type: 'image',
+      originalContentUrl,
+      previewImageUrl: previewImageUrl || originalContentUrl,
+    }]);
+  }
+
   // ─── Rich Menu Image Upload ─────────────────────────────────────────────
 
   /** Upload image to a rich menu. Accepts PNG/JPEG binary (ArrayBuffer or Uint8Array). */
