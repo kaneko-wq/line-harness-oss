@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { extractFlexAltText } from '../utils/flex-alt-text.js';
 import {
   getOperators,
   getOperatorById,
@@ -15,35 +14,6 @@ import {
 import type { Env } from '../index.js';
 
 const chats = new Hono<Env>();
-
-function clampLoadingSeconds(value: number | undefined): number {
-  const n = Number.isFinite(value) ? Math.floor(value as number) : 5;
-  return Math.min(60, Math.max(5, n));
-}
-
-async function startLoadingAnimation(
-  accessToken: string,
-  chatId: string,
-  loadingSeconds: number,
-): Promise<void> {
-  const response = await fetch('https://api.line.me/v2/bot/chat/loading/start', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ chatId, loadingSeconds }),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(
-      detail
-        ? `LINE API error: ${response.status} - ${detail}`
-        : `LINE API error: ${response.status}`,
-    );
-  }
-}
 
 // ========== オペレーターCRUD ==========
 
@@ -112,8 +82,8 @@ chats.get('/api/chats', async (c) => {
     const operatorId = c.req.query('operatorId') ?? undefined;
     const lineAccountId = c.req.query('lineAccountId') ?? undefined;
 
-    // JOIN friends to get display_name and picture_url
-    let sql = `SELECT c.*, f.display_name, f.picture_url, f.line_user_id
+    // JOIN friends to get display_name, custom_name and picture_url
+    let sql = `SELECT c.*, f.display_name, f.custom_name, f.picture_url, f.line_user_id
                FROM chats c
                LEFT JOIN friends f ON c.friend_id = f.id`;
     const conditions: string[] = [];
@@ -147,7 +117,8 @@ chats.get('/api/chats', async (c) => {
       data: result.results.map((ch: Record<string, unknown>) => ({
         id: ch.id,
         friendId: ch.friend_id,
-        friendName: ch.display_name || '名前なし',
+        friendName: ch.custom_name || ch.display_name || '名前なし',
+        friendCustomName: ch.custom_name || null,
         friendPictureUrl: ch.picture_url || null,
         operatorId: ch.operator_id,
         status: ch.status,
@@ -170,9 +141,9 @@ chats.get('/api/chats/:id', async (c) => {
 
     // 友だち情報を取得
     const friend = await c.env.DB
-      .prepare(`SELECT display_name, picture_url, line_user_id FROM friends WHERE id = ?`)
+      .prepare(`SELECT display_name, custom_name, picture_url, line_user_id FROM friends WHERE id = ?`)
       .bind(item.friend_id)
-      .first<{ display_name: string | null; picture_url: string | null; line_user_id: string }>();
+      .first<{ display_name: string | null; custom_name: string | null; picture_url: string | null; line_user_id: string }>();
 
     // チャットに関連するメッセージログも取得
     const messages = await c.env.DB
@@ -185,7 +156,8 @@ chats.get('/api/chats/:id', async (c) => {
       data: {
         id: item.id,
         friendId: item.friend_id,
-        friendName: friend?.display_name || '名前なし',
+        friendName: friend?.custom_name || friend?.display_name || '名前なし',
+        friendCustomName: friend?.custom_name || null,
         friendPictureUrl: friend?.picture_url || null,
         operatorId: item.operator_id,
         status: item.status,
@@ -242,42 +214,6 @@ chats.put('/api/chats/:id', async (c) => {
   }
 });
 
-// オペレーター入力中のローディング表示を開始
-chats.post('/api/chats/:id/loading', async (c) => {
-  try {
-    const chatId = c.req.param('id');
-    const chat = await getChatById(c.env.DB, chatId);
-    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
-
-    let loadingSecondsInput: number | undefined;
-    try {
-      const body = await c.req.json<{ loadingSeconds?: number }>();
-      loadingSecondsInput = body.loadingSeconds;
-    } catch {
-      loadingSecondsInput = undefined;
-    }
-    const loadingSeconds = clampLoadingSeconds(loadingSecondsInput);
-
-    const friend = await c.env.DB
-      .prepare(`SELECT * FROM friends WHERE id = ?`)
-      .bind(chat.friend_id)
-      .first<{ id: string; line_user_id: string }>();
-    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
-
-    await startLoadingAnimation(
-      c.env.LINE_CHANNEL_ACCESS_TOKEN,
-      friend.line_user_id,
-      loadingSeconds,
-    );
-
-    return c.json({ success: true, data: { started: true, loadingSeconds } });
-  } catch (err) {
-    console.error('POST /api/chats/:id/loading error:', err);
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return c.json({ success: false, error: message }, 500);
-  }
-});
-
 // オペレーターからメッセージ送信
 chats.post('/api/chats/:id/send', async (c) => {
   try {
@@ -288,22 +224,36 @@ chats.post('/api/chats/:id/send', async (c) => {
     const body = await c.req.json<{ messageType?: string; content: string }>();
     if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
 
+    // 友だち情報を取得（line_account_id を含む）
     const friend = await c.env.DB
-      .prepare(`SELECT * FROM friends WHERE id = ?`)
+      .prepare(`SELECT id, line_user_id, line_account_id FROM friends WHERE id = ?`)
       .bind(chat.friend_id)
-      .first<{ id: string; line_user_id: string }>();
+      .first<{ id: string; line_user_id: string; line_account_id: string }>();
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
 
-    // LINE APIでメッセージ送信
+    // 友だちの所属LINEアカウントからチャネルアクセストークンを取得
+    const account = await c.env.DB
+      .prepare(`SELECT channel_access_token FROM line_accounts WHERE id = ?`)
+      .bind(friend.line_account_id)
+      .first<{ channel_access_token: string }>();
+    if (!account || !account.channel_access_token) {
+      return c.json({ success: false, error: 'LINEアカウントのアクセストークンが設定されていません' }, 400);
+    }
+
+    // LINE APIでメッセージ送信（アカウント固有のトークンを使用）
     const { LineClient } = await import('@line-crm/line-sdk');
-    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const lineClient = new LineClient(account.channel_access_token);
     const messageType = body.messageType ?? 'text';
 
     if (messageType === 'text') {
       await lineClient.pushTextMessage(friend.line_user_id, body.content);
+    } else if (messageType === 'image') {
+      // content = JSON with originalContentUrl (and optional previewImageUrl)
+      const imgData = JSON.parse(body.content) as { originalContentUrl: string; previewImageUrl?: string };
+      await lineClient.pushImageMessage(friend.line_user_id, imgData.originalContentUrl, imgData.previewImageUrl);
     } else if (messageType === 'flex') {
       const contents = JSON.parse(body.content);
-      await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
+      await lineClient.pushFlexMessage(friend.line_user_id, 'Message', contents);
     }
 
     // メッセージログに記録
@@ -317,9 +267,10 @@ chats.post('/api/chats/:id/send', async (c) => {
     await updateChat(c.env.DB, chatId, { status: 'in_progress', lastMessageAt: jstNow() });
 
     return c.json({ success: true, data: { sent: true, messageId: logId } });
-  } catch (err) {
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : 'Internal server error';
     console.error('POST /api/chats/:id/send error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    return c.json({ success: false, error: errMsg }, 500);
   }
 });
 
