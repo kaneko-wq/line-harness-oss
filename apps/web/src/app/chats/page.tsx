@@ -1,11 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { api, fetchApi } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
-import FlexPreviewComponent from '@/components/flex-preview'
 
 interface Chat {
   id: string
@@ -48,10 +47,6 @@ const statusFilters: { key: StatusFilter; label: string }[] = [
   { key: 'in_progress', label: '対応中' },
   { key: 'resolved', label: '解決済' },
 ]
-
-const SHOW_LOADING_PREF_KEY = 'lh_chat_show_loading_indicator'
-const LOADING_SECONDS_PREF_KEY = 'lh_chat_loading_seconds'
-const LOADING_REFRESH_INTERVAL_MS = 4000
 
 function formatDatetime(iso: string | null): string {
   if (!iso) return '-'
@@ -249,35 +244,11 @@ export default function ChatsPage() {
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
   const [sending, setSending] = useState(false)
+  const [sendingImage, setSendingImage] = useState(false)
+  const [showImageInput, setShowImageInput] = useState(false)
+  const [imageUrl, setImageUrl] = useState('')
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
-  const [showLoadingIndicator, setShowLoadingIndicator] = useState(false)
-  const [loadingSeconds, setLoadingSeconds] = useState(5)
-  const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
-  const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
-
-  useEffect(() => {
-    try {
-      const rawEnabled = localStorage.getItem(SHOW_LOADING_PREF_KEY)
-      const rawSeconds = localStorage.getItem(LOADING_SECONDS_PREF_KEY)
-      if (rawEnabled !== null) setShowLoadingIndicator(rawEnabled === '1')
-      if (rawSeconds) {
-        const n = Number.parseInt(rawSeconds, 10)
-        if (Number.isFinite(n) && n >= 5 && n <= 60) setLoadingSeconds(n)
-      }
-    } catch {
-      // localStorage unavailable
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(SHOW_LOADING_PREF_KEY, showLoadingIndicator ? '1' : '0')
-      localStorage.setItem(LOADING_SECONDS_PREF_KEY, String(loadingSeconds))
-    } catch {
-      // localStorage unavailable
-    }
-  }, [showLoadingIndicator, loadingSeconds])
 
   const loadChats = useCallback(async () => {
     setLoading(true)
@@ -288,7 +259,7 @@ export default function ChatsPage() {
       if (selectedAccountId) params.accountId = selectedAccountId
       const [chatRes, friendRes] = await Promise.allSettled([
         api.chats.list(params),
-        api.friends.list({ accountId: selectedAccountId || undefined, limit: '800' }),
+        api.friends.list({ accountId: selectedAccountId || undefined, limit: '100' }),
       ])
       if (chatRes.status === 'fulfilled' && chatRes.value.success) {
         setChats(chatRes.value.data as unknown as Chat[])
@@ -335,32 +306,11 @@ export default function ChatsPage() {
     setMessageContent('')
   }
 
-  const triggerLoadingAnimation = useCallback(async (chatId: string) => {
-    if (!showLoadingIndicator) return
-
-    const now = Date.now()
-    const last = lastLoadingTriggerAtRef.current[chatId] ?? 0
-    if (now - last < LOADING_REFRESH_INTERVAL_MS) return
-    lastLoadingTriggerAtRef.current[chatId] = now
-
-    try {
-      await fetchApi<{ success: boolean }>(`/api/chats/${chatId}/loading`, {
-        method: 'POST',
-        body: JSON.stringify({ loadingSeconds }),
-      })
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : 'unknown'
-      setError(`ローディング表示の開始に失敗しました: ${detail}`)
-    }
-  }, [showLoadingIndicator, loadingSeconds])
-
   const handleSendMessage = async () => {
     if (!selectedChatId || !messageContent.trim()) return
     setSending(true)
     try {
-      await api.chats.send(selectedChatId, {
-        content: messageContent.trim(),
-      })
+      await api.chats.send(selectedChatId, { content: messageContent.trim() })
       setMessageContent('')
       loadChatDetail(selectedChatId)
       loadChats()
@@ -368,6 +318,25 @@ export default function ChatsPage() {
       setError('メッセージの送信に失敗しました。')
     } finally {
       setSending(false)
+    }
+  }
+
+  const handleSendImage = async () => {
+    if (!selectedChatId || !imageUrl.trim()) return
+    setSendingImage(true)
+    try {
+      await api.chats.send(selectedChatId, {
+        content: JSON.stringify({ originalContentUrl: imageUrl.trim(), previewImageUrl: imageUrl.trim() }),
+        messageType: 'image',
+      })
+      setImageUrl('')
+      setShowImageInput(false)
+      loadChatDetail(selectedChatId)
+      loadChats()
+    } catch {
+      setError('画像の送信に失敗しました。')
+    } finally {
+      setSendingImage(false)
     }
   }
 
@@ -482,6 +451,38 @@ export default function ChatsPage() {
                     </button>
                   )
                 })}
+                {/* Friends without chats */}
+                {allFriends
+                  .filter((f) => f.isFollowing && !chats.some((c) => c.friendId === f.id))
+                  .map((friend) => {
+                    const isSelected = selectedFriendId === friend.id
+                    return (
+                      <button
+                        key={friend.id}
+                        onClick={() => { setSelectedChatId(null); setChatDetail(null); setSelectedFriendId(friend.id); }}
+                        className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-colors ${
+                          isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          {friend.pictureUrl ? (
+                            <img src={friend.pictureUrl} alt="" className="w-10 h-10 rounded-full flex-shrink-0" />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
+                              <span className="text-gray-500 text-sm">{(friend.displayName || '?').charAt(0)}</span>
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-gray-900 truncate">{friend.displayName}</p>
+                            <p className="text-xs text-gray-400 mt-0.5">会話なし</p>
+                          </div>
+                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 bg-gray-100 text-gray-500">
+                            新規
+                          </span>
+                        </div>
+                      </button>
+                    )
+                  })}
               </>
             )}
           </div>
@@ -574,9 +575,17 @@ export default function ChatsPage() {
                     // メッセージ表示の分岐
                     let bubbleContent: React.ReactNode
                     if (msg.messageType === 'flex') {
+                      // Flexメッセージ — JSONをフォーマットして表示
+                      let formatted = msg.content
+                      try {
+                        formatted = JSON.stringify(JSON.parse(msg.content), null, 2)
+                      } catch { /* use raw */ }
                       bubbleContent = (
                         <div className="max-w-[300px]">
-                          <FlexPreviewComponent content={msg.content} maxWidth={280} />
+                          <div className="text-xs font-medium mb-1 opacity-70">📋 Flex Message</div>
+                          <pre className="text-xs overflow-x-auto whitespace-pre-wrap bg-black/10 rounded p-2 max-h-[200px] overflow-y-auto" style={{ fontSize: '10px' }}>
+                            {formatted}
+                          </pre>
                         </div>
                       )
                     } else if (msg.messageType === 'image') {
@@ -649,47 +658,53 @@ export default function ChatsPage() {
                 </div>
               </div>
 
+              {/* Image URL Input (toggled) */}
+              {showImageInput && (
+                <div className="px-4 py-2 border-t border-gray-200 bg-blue-50">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={imageUrl}
+                      onChange={(e) => setImageUrl(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSendImage() } }}
+                      placeholder="画像URLを入力（https://...）"
+                      className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={handleSendImage}
+                      disabled={sendingImage || !imageUrl.trim()}
+                      className="px-3 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed bg-blue-500"
+                    >
+                      {sendingImage ? '送信中...' : '画像送信'}
+                    </button>
+                    <button
+                      onClick={() => { setShowImageInput(false); setImageUrl('') }}
+                      className="px-2 py-2 text-sm text-gray-500 hover:text-gray-700"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">HTTPS形式の画像URLを入力してください（JPEG/PNG）</p>
+                </div>
+              )}
+
               {/* Send Message Form */}
               <div className="px-4 py-3 border-t border-gray-200">
-                <div className="mb-2 flex items-center gap-3 text-xs text-gray-600">
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={showLoadingIndicator}
-                      onChange={(e) => setShowLoadingIndicator(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
-                    />
-                    入力中ローディングを表示
-                  </label>
-                  <select
-                    value={loadingSeconds}
-                    onChange={(e) => setLoadingSeconds(Number.parseInt(e.target.value, 10))}
-                    disabled={!showLoadingIndicator}
-                    className="border border-gray-300 rounded-md px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-400"
-                  >
-                    {[5, 10, 15, 20, 30, 45, 60].map((sec) => (
-                      <option key={sec} value={sec}>{sec}秒</option>
-                    ))}
-                  </select>
-                </div>
                 <div className="flex items-center gap-2">
+                  {/* Image button */}
+                  <button
+                    onClick={() => setShowImageInput(!showImageInput)}
+                    className={`p-2 rounded-lg transition-colors ${showImageInput ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+                    title="画像を送信"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                  </button>
                   <input
                     type="text"
                     value={messageContent}
-                    onChange={(e) => {
-                      const value = e.target.value
-                      setMessageContent(value)
-                      if (selectedChatId && isMessageInputFocused && value.trim()) {
-                        void triggerLoadingAnimation(selectedChatId)
-                      }
-                    }}
-                    onFocus={() => {
-                      setIsMessageInputFocused(true)
-                      if (selectedChatId) {
-                        void triggerLoadingAnimation(selectedChatId)
-                      }
-                    }}
-                    onBlur={() => setIsMessageInputFocused(false)}
+                    onChange={(e) => setMessageContent(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder="メッセージを入力..."
                     className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
