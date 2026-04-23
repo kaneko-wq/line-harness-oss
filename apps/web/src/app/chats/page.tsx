@@ -610,7 +610,7 @@ export default function ChatsPage() {
                     } else if (msg.messageType === 'video') {
                       bubbleContent = <span>🎬 [動画]</span>
                     } else {
-                      bubbleContent = <span>{msg.content}</span>
+                      bubbleContent = <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
                     }
 
                     return (
