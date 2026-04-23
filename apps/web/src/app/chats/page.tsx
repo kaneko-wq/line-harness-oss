@@ -591,12 +591,24 @@ export default function ChatsPage() {
                     } else if (msg.messageType === 'image') {
                       try {
                         const parsed = JSON.parse(msg.content)
-                        bubbleContent = (
-                          <img src={parsed.originalContentUrl || parsed.previewImageUrl} alt="" className="max-w-[200px] rounded" />
-                        )
+                        if (parsed.lineInternal) {
+                          // LINE内部ストレージの画像 — プロキシ経由で取得
+                          const proxyUrl = `${process.env.NEXT_PUBLIC_API_URL || 'https://line-crm-worker.kaneko-845.workers.dev'}/api/image-proxy?url=${encodeURIComponent(parsed.originalContentUrl)}&token=${encodeURIComponent(parsed.channelAccessToken || '')}`
+                          bubbleContent = (
+                            <img src={proxyUrl} alt="画像" className="max-w-[200px] rounded cursor-pointer" onClick={() => window.open(proxyUrl, '_blank')} />
+                          )
+                        } else {
+                          bubbleContent = (
+                            <img src={parsed.originalContentUrl || parsed.previewImageUrl} alt="画像" className="max-w-[200px] rounded cursor-pointer" onClick={() => window.open(parsed.originalContentUrl || parsed.previewImageUrl, '_blank')} />
+                          )
+                        }
                       } catch {
                         bubbleContent = <span>🖼️ [画像]</span>
                       }
+                    } else if (msg.messageType === 'sticker') {
+                      bubbleContent = <span>🎨 [スタンプ]</span>
+                    } else if (msg.messageType === 'video') {
+                      bubbleContent = <span>🎬 [動画]</span>
                     } else {
                       bubbleContent = <span>{msg.content}</span>
                     }
