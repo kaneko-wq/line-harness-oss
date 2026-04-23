@@ -95,6 +95,48 @@ app.route('/', trackedLinks);
 app.route('/', forms);
 app.route('/', analytics);
 
+// Image upload — 画像をアップロードしてLINE送信用の公開URLを生成
+app.post('/api/upload-image', async (c) => {
+  try {
+    const body = await c.req.json<{ data: string; contentType?: string }>();
+    if (!body.data) return c.json({ error: 'Missing image data' }, 400);
+
+    const id = crypto.randomUUID();
+    const contentType = body.contentType || 'image/jpeg';
+
+    await c.env.DB.prepare(
+      'INSERT INTO uploaded_images (id, data, content_type) VALUES (?, ?, ?)'
+    ).bind(id, body.data, contentType).run();
+
+    const workerUrl = c.env.WORKER_URL || new URL(c.req.url).origin;
+    const imageUrl = `${workerUrl}/api/images/${id}`;
+
+    return c.json({ success: true, data: { id, url: imageUrl } });
+  } catch (err) {
+    console.error('Upload image error:', err);
+    return c.json({ error: 'Upload failed' }, 500);
+  }
+});
+
+// Image serve — アップロード済み画像を公開配信
+app.get('/api/images/:id', async (c) => {
+  const id = c.req.param('id');
+  const row = await c.env.DB.prepare(
+    'SELECT data, content_type FROM uploaded_images WHERE id = ?'
+  ).bind(id).first<{ data: string; content_type: string }>();
+
+  if (!row) return c.json({ error: 'Not found' }, 404);
+
+  // base64 → binary
+  const binary = Uint8Array.from(atob(row.data), ch => ch.charCodeAt(0));
+  return new Response(binary, {
+    headers: {
+      'Content-Type': row.content_type,
+      'Cache-Control': 'public, max-age=604800',
+    },
+  });
+});
+
 // Image proxy — LINE内部ストレージの画像をプロキシ取得
 app.get('/api/image-proxy', async (c) => {
   const url = c.req.query('url');
