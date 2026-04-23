@@ -6,9 +6,7 @@ import { processStepDeliveries } from './services/step-delivery.js';
 import { processScheduledBroadcasts } from './services/broadcast.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
-import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { authMiddleware } from './middleware/auth.js';
-import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
 import { tags } from './routes/tags.js';
@@ -34,14 +32,14 @@ import { automations } from './routes/automations.js';
 import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
 import { forms } from './routes/forms.js';
-import { adPlatforms } from './routes/ad-platforms.js';
-import { staff } from './routes/staff.js';
-import { images } from './routes/images.js';
+import { auth } from './routes/auth.js';
+import { analytics } from './routes/analytics.js';
+import { auditMiddleware } from './middleware/audit.js';
+import { roleGuard } from './middleware/role-guard.js';
 
 export type Env = {
   Bindings: {
     DB: D1Database;
-    IMAGES: R2Bucket;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
     API_KEY: string;
@@ -50,10 +48,6 @@ export type Env = {
     LINE_LOGIN_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_SECRET: string;
     WORKER_URL: string;
-    X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
-  };
-  Variables: {
-    staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
   };
 };
 
@@ -62,11 +56,15 @@ const app = new Hono<Env>();
 // CORS — allow all origins for MVP
 app.use('*', cors({ origin: '*' }));
 
-// Rate limiting — runs before auth to block abuse early
-app.use('*', rateLimitMiddleware);
-
 // Auth middleware — skips /webhook and /docs automatically
 app.use('*', authMiddleware);
+
+// Auth routes (before auth middleware skip)
+app.route('/', auth);
+
+// Role-based access control & audit logging (after auth, before routes)
+app.use('*', roleGuard);
+app.use('*', auditMiddleware);
 
 // Mount route groups — MVP & Round 2
 app.route('/', webhook);
@@ -95,17 +93,37 @@ app.route('/', automations);
 app.route('/', richMenus);
 app.route('/', trackedLinks);
 app.route('/', forms);
-app.route('/', adPlatforms);
-app.route('/', staff);
-app.route('/', images);
+app.route('/', analytics);
+
+// Image proxy — LINE内部ストレージの画像をプロキシ取得
+app.get('/api/image-proxy', async (c) => {
+  const url = c.req.query('url');
+  const token = c.req.query('token');
+  if (!url || !token) return c.json({ error: 'Missing url or token' }, 400);
+
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return c.json({ error: 'Failed to fetch image' }, res.status);
+
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    const body = await res.arrayBuffer();
+    return new Response(body, {
+      headers: {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400',
+      },
+    });
+  } catch {
+    return c.json({ error: 'Proxy error' }, 500);
+  }
+});
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
   const ref = c.req.param('ref');
-  const liffUrl = c.env.LIFF_URL;
-  if (!liffUrl) {
-    return c.json({ error: 'LIFF_URL is not configured. Set it via wrangler secret put LIFF_URL.' }, 500);
-  }
+  const liffUrl = c.env.LIFF_URL || 'https://liff.line.me/2009554425-4IMBmLQ9';
   const target = `${liffUrl}?ref=${encodeURIComponent(ref)}`;
 
   return c.html(`<!DOCTYPE html>
@@ -136,17 +154,8 @@ h1{font-size:28px;font-weight:800;margin-bottom:8px}
 </html>`);
 });
 
-// Convenience redirect for /book path
-app.get('/book', (c) => c.redirect('/?page=book'));
-
-// 404 fallback — JSON for API paths, plain for others (Workers Assets SPA fallback handles it)
-app.notFound((c) => {
-  const path = new URL(c.req.url).pathname;
-  if (path.startsWith('/api/') || path === '/webhook' || path === '/docs' || path === '/openapi.json') {
-    return c.json({ success: false, error: 'Not found' }, 404);
-  }
-  return c.notFound();
-});
+// 404 fallback
+app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 
 // Scheduled handler for cron triggers — runs for all active LINE accounts
 async function scheduled(
@@ -174,12 +183,26 @@ async function scheduled(
     const lineClient = new LineClient(token);
     jobs.push(
       processStepDeliveries(env.DB, lineClient, env.WORKER_URL),
-      processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL),
+      processScheduledBroadcasts(env.DB, lineClient),
       processReminderDeliveries(env.DB, lineClient),
     );
   }
   jobs.push(checkAccountHealth(env.DB));
-  jobs.push(refreshLineAccessTokens(env.DB));
+
+  // Daily friend count snapshot
+  jobs.push(
+    (async () => {
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const now = new Date().toISOString();
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO friend_snapshots (line_account_id, date, total_count, following_count, blocked_count, created_at)
+          SELECT f.line_account_id, ?, COUNT(*), SUM(CASE WHEN f.is_following=1 THEN 1 ELSE 0 END), SUM(CASE WHEN f.is_following=0 THEN 1 ELSE 0 END), ?
+          FROM friends f GROUP BY f.line_account_id
+        `).bind(today, now).run();
+      } catch { /* snapshot failure should not break cron */ }
+    })()
+  );
 
   await Promise.allSettled(jobs);
 }
