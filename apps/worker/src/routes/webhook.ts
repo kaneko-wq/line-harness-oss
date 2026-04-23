@@ -172,7 +172,7 @@ async function handleEvent(
       }
     }
 
-    // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
+    // イベントバス発火: friend_add
     await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
     return;
   }
@@ -183,6 +183,63 @@ async function handleEvent(
     if (!userId) return;
 
     await updateFriendFollowStatus(db, userId, false);
+    return;
+  }
+
+  // 画像・動画・スタンプなど非テキストメッセージの処理
+  if (event.type === 'message' && event.message.type !== 'text') {
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    const friend = await getFriendByLineUserId(db, userId);
+    if (!friend) return;
+
+    const msgType = event.message.type; // image, video, sticker, etc.
+    const now = jstNow();
+    const logId = crypto.randomUUID();
+
+    // 画像の場合はコンテンツURLを保存
+    let contentData = JSON.stringify({ type: msgType, messageId: event.message.id });
+    if (msgType === 'image') {
+      const imgMsg = event.message as { id: string; contentProvider: { type: string; originalContentUrl?: string; previewImageUrl?: string } };
+      if (imgMsg.contentProvider.type === 'external') {
+        contentData = JSON.stringify({
+          type: 'image',
+          originalContentUrl: imgMsg.contentProvider.originalContentUrl,
+          previewImageUrl: imgMsg.contentProvider.previewImageUrl,
+        });
+      } else {
+        // LINE内部ストレージの場合、content APIのURLを保存
+        contentData = JSON.stringify({
+          type: 'image',
+          originalContentUrl: `https://api-data.line.me/v2/bot/message/${event.message.id}/content`,
+          previewImageUrl: `https://api-data.line.me/v2/bot/message/${event.message.id}/content/preview`,
+          lineInternal: true,
+          channelAccessToken: lineAccessToken,
+        });
+      }
+    }
+
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
+         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, ?)`,
+      )
+      .bind(logId, friend.id, msgType, contentData, now)
+      .run();
+
+    await upsertChatOnMessage(db, friend.id);
+
+    // Set line_account_id if not set
+    if (lineAccountId) {
+      await db.prepare('UPDATE friends SET line_account_id = ? WHERE id = ? AND line_account_id IS NULL')
+        .bind(lineAccountId, friend.id).run();
+    }
+
+    await fireEvent(db, 'message_received', {
+      friendId: friend.id,
+      eventData: { type: msgType, messageId: event.message.id },
+    }, lineAccessToken, lineAccountId);
     return;
   }
 
@@ -208,14 +265,8 @@ async function handleEvent(
       .bind(logId, friend.id, incomingText, now)
       .run();
 
-    // チャットを作成/更新（ユーザーの自発的メッセージのみ unread にする）
-    // ボタンタップ等の自動応答キーワードは除外
-    const autoKeywords = ['料金', '機能', 'API', 'フォーム', 'ヘルプ', 'UUID', 'UUID連携について教えて', 'UUID連携を確認', '配信時間', '導入支援を希望します', 'アカウント連携を見る', '体験を完了する', 'BAN対策を見る', '連携確認'];
-    const isAutoKeyword = autoKeywords.some(k => incomingText === k);
-    const isTimeCommand = /(?:配信時間|配信|届けて|通知)[はを]?\s*\d{1,2}\s*時/.test(incomingText);
-    if (!isAutoKeyword && !isTimeCommand) {
-      await upsertChatOnMessage(db, friend.id);
-    }
+    // チャットを作成/更新（オペレーター機能連携）
+    await upsertChatOnMessage(db, friend.id);
 
     // 配信時間設定: 「配信時間は○時」「○時に届けて」等のパターンを検出
     const timeMatch = incomingText.match(/(?:配信時間|配信|届けて|通知)[はを]?\s*(\d{1,2})\s*時/);
@@ -282,7 +333,7 @@ async function handleEvent(
               footer: { type: 'box', layout: 'vertical', paddingAll: '16px',
                 contents: [
                   { type: 'button', action: { type: 'message', label: '導入について相談する', text: '導入支援を希望します' }, style: 'primary', color: '#06C755' },
-                  ...(c.env.LIFF_URL ? [{ type: 'button', action: { type: 'uri', label: 'フィードバックを送る', uri: `${c.env.LIFF_URL}?page=form` }, style: 'secondary', margin: 'sm' }] : []),
+                  { type: 'button', action: { type: 'uri', label: 'フィードバックを送る', uri: 'https://liff.line.me/2009554425-4IMBmLQ9?page=form&id=0c81910a-fe27-41a7-bf8c-1411a9240155' }, style: 'secondary', margin: 'sm' },
                 ],
               },
             }))]);
@@ -308,11 +359,8 @@ async function handleEvent(
     // 自動返信チェック（このアカウントのルール + グローバルルールのみ）
     // NOTE: Auto-replies use replyMessage (free, no quota) instead of pushMessage
     // The replyToken is only valid for ~1 minute after the message event
-    const autoReplyQuery = lineAccountId
-      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
-      : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
-    const autoReplyStmt = db.prepare(autoReplyQuery);
-    const autoReplies = await (lineAccountId ? autoReplyStmt.bind(lineAccountId) : autoReplyStmt)
+    const autoReplies = await db
+      .prepare(`SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL${lineAccountId ? ` OR line_account_id = '${lineAccountId}'` : ''}) ORDER BY created_at ASC`)
       .all<{
         id: string;
         keyword: string;
@@ -324,7 +372,6 @@ async function handleEvent(
       }>();
 
     let matched = false;
-    let replyTokenConsumed = false;
     for (const rule of autoReplies.results) {
       const isMatch =
         rule.match_type === 'exact'
@@ -337,7 +384,6 @@ async function handleEvent(
           const expandedContent = expandVariables(rule.response_content, friend as { id: string; display_name: string | null; user_id: string | null }, workerUrl);
           const replyMsg = buildMessage(rule.response_type, expandedContent);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
-          replyTokenConsumed = true;
 
           // 送信ログ（replyMessage = 無料）
           const outLogId = crypto.randomUUID();
@@ -350,7 +396,6 @@ async function handleEvent(
             .run();
         } catch (err) {
           console.error('Failed to send auto-reply', err);
-          // replyToken may still be unused if replyMessage threw before LINE accepted it
         }
 
         matched = true;
@@ -359,11 +404,9 @@ async function handleEvent(
     }
 
     // イベントバス発火: message_received
-    // Pass replyToken only when auto_reply didn't actually consume it
     await fireEvent(db, 'message_received', {
       friendId: friend.id,
       eventData: { text: incomingText, matched },
-      replyToken: replyTokenConsumed ? undefined : event.replyToken,
     }, lineAccessToken, lineAccountId);
 
     return;
