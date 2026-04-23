@@ -321,12 +321,39 @@ export default function ChatsPage() {
     }
   }
 
-  const handleSendImage = async () => {
-    if (!selectedChatId || !imageUrl.trim()) return
+  const handleSendImage = async (file?: File) => {
+    if (!selectedChatId) return
     setSendingImage(true)
     try {
+      let imgUrl = ''
+
+      if (file) {
+        // ファイルからアップロード
+        const reader = new FileReader()
+        const base64 = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            const result = reader.result as string
+            resolve(result.split(',')[1]) // data:image/...;base64,XXXX → XXXX
+          }
+          reader.onerror = reject
+          reader.readAsDataURL(file)
+        })
+
+        const uploadRes = await fetchApi<{ success: boolean; data: { url: string } }>('/api/upload-image', {
+          method: 'POST',
+          body: JSON.stringify({ data: base64, contentType: file.type || 'image/jpeg' }),
+        })
+        if (!uploadRes.success) throw new Error('Upload failed')
+        imgUrl = uploadRes.data.url
+      } else if (imageUrl.trim()) {
+        imgUrl = imageUrl.trim()
+      } else {
+        setSendingImage(false)
+        return
+      }
+
       await api.chats.send(selectedChatId, {
-        content: JSON.stringify({ originalContentUrl: imageUrl.trim(), previewImageUrl: imageUrl.trim() }),
+        content: JSON.stringify({ originalContentUrl: imgUrl, previewImageUrl: imgUrl }),
         messageType: 'image',
       })
       setImageUrl('')
@@ -338,6 +365,12 @@ export default function ChatsPage() {
     } finally {
       setSendingImage(false)
     }
+  }
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) handleSendImage(file)
+    e.target.value = '' // reset for re-select
   }
 
   const handleStatusUpdate = async (newStatus: Chat['status']) => {
@@ -703,16 +736,29 @@ export default function ChatsPage() {
               {/* Send Message Form */}
               <div className="px-4 py-3 border-t border-gray-200">
                 <div className="flex items-center gap-2">
-                  {/* Image button */}
-                  <button
-                    onClick={() => setShowImageInput(!showImageInput)}
-                    className={`p-2 rounded-lg transition-colors ${showImageInput ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+                  {/* Image upload button */}
+                  <label
+                    className={`p-2 rounded-lg transition-colors cursor-pointer ${sendingImage ? 'opacity-50' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
                     title="画像を送信"
                   >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
-                  </button>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleFileSelect}
+                      disabled={sendingImage}
+                    />
+                    {sendingImage ? (
+                      <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                    )}
+                  </label>
                   <input
                     type="text"
                     value={messageContent}
