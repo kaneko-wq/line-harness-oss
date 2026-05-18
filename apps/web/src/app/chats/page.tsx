@@ -209,13 +209,15 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
       </div>
       <div className="px-4 py-3 border-t border-gray-200">
         <div className="flex gap-2">
-          <input
-            type="text"
+          <textarea
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
-            placeholder="メッセージを入力..."
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
+            placeholder="メッセージを入力...（Shift+Enterで改行）"
+            rows={1}
+            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent resize-none"
+            style={{ minHeight: '38px', maxHeight: '120px' }}
+            onInput={(e) => { const t = e.currentTarget; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px' }}
           />
           <button
             onClick={handleSend}
@@ -397,7 +399,7 @@ export default function ChatsPage() {
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSendMessage()
@@ -626,7 +628,7 @@ export default function ChatsPage() {
                         const parsed = JSON.parse(msg.content)
                         if (parsed.lineInternal) {
                           // LINE内部ストレージの画像 — プロキシ経由で取得
-                          const proxyUrl = `${process.env.NEXT_PUBLIC_API_URL || 'https://line-crm-worker.kaneko-845.workers.dev'}/api/image-proxy?url=${encodeURIComponent(parsed.originalContentUrl)}&token=${encodeURIComponent(parsed.channelAccessToken || '')}`
+                          const proxyUrl = `${process.env.NEXT_PUBLIC_API_URL || 'https://lunoa-line-worker.kaneko-845.workers.dev'}/api/image-proxy?url=${encodeURIComponent(parsed.originalContentUrl)}&token=${encodeURIComponent(parsed.channelAccessToken || '')}`
                           bubbleContent = (
                             <img src={proxyUrl} alt="画像" className="max-w-[200px] rounded cursor-pointer" onClick={() => window.open(proxyUrl, '_blank')} />
                           )
@@ -716,7 +718,7 @@ export default function ChatsPage() {
                       className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                     <button
-                      onClick={handleSendImage}
+                      onClick={() => handleSendImage()}
                       disabled={sendingImage || !imageUrl.trim()}
                       className="px-3 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed bg-blue-500"
                     >
@@ -759,13 +761,15 @@ export default function ChatsPage() {
                       </svg>
                     )}
                   </label>
-                  <input
-                    type="text"
+                  <textarea
                     value={messageContent}
                     onChange={(e) => setMessageContent(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="メッセージを入力..."
-                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="メッセージを入力...（Shift+Enterで改行）"
+                    rows={1}
+                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                    style={{ minHeight: '38px', maxHeight: '120px' }}
+                    onInput={(e) => { const t = e.currentTarget; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px' }}
                   />
                   <button
                     onClick={handleSendMessage}

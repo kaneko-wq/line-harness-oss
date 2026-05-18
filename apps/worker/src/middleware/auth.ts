@@ -1,5 +1,4 @@
 import type { Context, Next } from 'hono';
-import { getStaffByApiKey } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 export async function authMiddleware(c: Context<Env>, next: Next): Promise<Response | void> {
@@ -13,13 +12,14 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/affiliates/click' ||
     path.startsWith('/t/') ||
     path.startsWith('/r/') ||
-    path.startsWith('/images/') ||
     path.startsWith('/api/liff/') ||
     path.startsWith('/auth/') ||
     path === '/api/integrations/stripe/webhook' ||
     path.match(/^\/api\/webhooks\/incoming\/[^/]+\/receive$/) ||
     path.match(/^\/api\/forms\/[^/]+\/submit$/) ||
-    path.match(/^\/api\/forms\/[^/]+$/) // GET form definition (public for LIFF)
+    path.match(/^\/api\/forms\/[^/]+$/) || // GET form definition (public for LIFF)
+    path.match(/^\/api\/images\/[^/]+$/) || // Public image serving
+    path === '/api/image-proxy' // LINE image proxy
   ) {
     return next();
   }
@@ -31,17 +31,24 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
 
   const token = authHeader.slice('Bearer '.length);
 
-  // Check staff_members table first
-  const staff = await getStaffByApiKey(c.env.DB, token);
-  if (staff) {
-    c.set('staff', { id: staff.id, name: staff.name, role: staff.role });
+  // 1. Check against static API_KEY (backward compatible)
+  if (token === c.env.API_KEY) {
     return next();
   }
 
-  // Fallback: env API_KEY acts as owner
-  if (token === c.env.API_KEY) {
-    c.set('staff', { id: 'env-owner', name: 'Owner', role: 'owner' as const });
-    return next();
+  // 2. Check against session token in admin_sessions
+  try {
+    const session = await c.env.DB.prepare(
+      'SELECT s.user_id, s.expires_at FROM admin_sessions s JOIN admin_users u ON s.user_id = u.id WHERE s.token = ? AND u.is_active = 1'
+    ).bind(token).first<{ user_id: string; expires_at: string }>();
+
+    if (session && new Date(session.expires_at) > new Date()) {
+      // Store user_id in context for downstream route handlers
+      c.set('userId', session.user_id);
+      return next();
+    }
+  } catch {
+    // If admin_sessions table doesn't exist yet, just fall through
   }
 
   return c.json({ success: false, error: 'Unauthorized' }, 401);

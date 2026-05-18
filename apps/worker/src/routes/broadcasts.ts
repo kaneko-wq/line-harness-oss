@@ -81,7 +81,6 @@ broadcasts.post('/api/broadcasts', async (c) => {
       targetTagId?: string | null;
       scheduledAt?: string | null;
       lineAccountId?: string | null;
-      altText?: string | null;
     }>();
 
     if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
@@ -107,15 +106,10 @@ broadcasts.post('/api/broadcasts', async (c) => {
       scheduledAt: body.scheduledAt ?? null,
     });
 
-    // Save line_account_id and alt_text if provided
-    const updates: string[] = [];
-    const binds: unknown[] = [];
-    if (body.lineAccountId) { updates.push('line_account_id = ?'); binds.push(body.lineAccountId); }
-    if (body.altText) { updates.push('alt_text = ?'); binds.push(body.altText); }
-    if (updates.length > 0) {
-      binds.push(broadcast.id);
-      await c.env.DB.prepare(`UPDATE broadcasts SET ${updates.join(', ')} WHERE id = ?`)
-        .bind(...binds).run();
+    // Save line_account_id if provided
+    if (body.lineAccountId) {
+      await c.env.DB.prepare(`UPDATE broadcasts SET line_account_id = ? WHERE id = ?`)
+        .bind(body.lineAccountId, broadcast.id).run();
     }
 
     return c.json({ success: true, data: serializeBroadcast(broadcast) }, 201);
@@ -197,14 +191,24 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
       return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 400);
     }
 
-    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
-    await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL);
+    // ブロードキャストの所属LINEアカウントからトークン取得
+    let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (existing.line_account_id) {
+      const acct = await c.env.DB
+        .prepare('SELECT channel_access_token FROM line_accounts WHERE id = ?')
+        .bind(existing.line_account_id)
+        .first<{ channel_access_token: string }>();
+      if (acct?.channel_access_token) accessToken = acct.channel_access_token;
+    }
+    const lineClient = new LineClient(accessToken);
+    await processBroadcastSend(c.env.DB, lineClient, id);
 
     const result = await getBroadcastById(c.env.DB, id);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
-  } catch (err) {
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : 'Internal server error';
     console.error('POST /api/broadcasts/:id/send error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    return c.json({ success: false, error: errMsg }, 500);
   }
 });
 
@@ -231,14 +235,24 @@ broadcasts.post('/api/broadcasts/:id/send-segment', async (c) => {
       );
     }
 
-    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    // ブロードキャストの所属LINEアカウントからトークン取得
+    let accessToken2 = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (existing.line_account_id) {
+      const acct = await c.env.DB
+        .prepare('SELECT channel_access_token FROM line_accounts WHERE id = ?')
+        .bind(existing.line_account_id)
+        .first<{ channel_access_token: string }>();
+      if (acct?.channel_access_token) accessToken2 = acct.channel_access_token;
+    }
+    const lineClient = new LineClient(accessToken2);
     await processSegmentSend(c.env.DB, lineClient, id, body.conditions);
 
     const result = await getBroadcastById(c.env.DB, id);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
-  } catch (err) {
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : 'Internal server error';
     console.error('POST /api/broadcasts/:id/send-segment error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    return c.json({ success: false, error: errMsg }, 500);
   }
 });
 

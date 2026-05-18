@@ -7,7 +7,6 @@ import {
   deleteLineAccount,
 } from '@line-crm/db';
 import type { LineAccount as DbLineAccount } from '@line-crm/db';
-import { requireRole } from '../middleware/role-guard.js';
 import type { Env } from '../index.js';
 
 const lineAccounts = new Hono<Env>();
@@ -47,17 +46,40 @@ async function fetchBotProfile(accessToken: string): Promise<{ displayName?: str
 }
 
 // GET /api/line-accounts - list all (with LINE profile + stats)
+// If user is authenticated via session token, filter by user_line_accounts
 lineAccounts.get('/api/line-accounts', async (c) => {
   try {
     const db = c.env.DB;
-    const items = await getLineAccounts(db);
+    let items = await getLineAccounts(db);
+
+    // Filter by user's allowed accounts if userId is set (session-based auth)
+    const userId = c.get('userId') as string | undefined;
+    if (userId) {
+      try {
+        const allowed = await db.prepare(
+          'SELECT line_account_id FROM user_line_accounts WHERE user_id = ?'
+        ).bind(userId).all<{ line_account_id: string }>();
+
+        if (allowed.results && allowed.results.length > 0) {
+          const allowedIds = new Set(allowed.results.map(r => r.line_account_id));
+          items = items.filter(item => allowedIds.has(item.id));
+        }
+        // If no rows in user_line_accounts, show all (backward compatible)
+      } catch {
+        // If user_line_accounts table doesn't exist, show all (backward compatible)
+      }
+    }
 
     // Get stats for all accounts in parallel
     const results = await Promise.all(
       items.map(async (item) => {
-        const [profile, friendCount, scenarioCount, msgCount] = await Promise.all([
+        const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10).replace(/-/g, '');
+        const [profile, friendCount, insightRes, scenarioCount, msgCount] = await Promise.all([
           fetchBotProfile(item.channel_access_token),
           db.prepare(`SELECT COUNT(*) as count FROM friends WHERE is_following = 1 AND line_account_id = ?`).bind(item.id).first<{ count: number }>(),
+          fetch(`https://api.line.me/v2/bot/insight/followers?date=${yesterday}`, {
+            headers: { Authorization: `Bearer ${item.channel_access_token}` },
+          }).then(r => r.json()).catch(() => ({})) as Promise<{ status?: string; followers?: number }>,
           db.prepare(
             `SELECT COUNT(*) as count FROM friend_scenarios fs
              INNER JOIN friends f ON f.id = fs.friend_id
@@ -76,7 +98,9 @@ lineAccounts.get('/api/line-accounts', async (c) => {
           pictureUrl: profile.pictureUrl || null,
           basicId: profile.basicId || null,
           stats: {
-            friendCount: friendCount?.count ?? 0,
+            friendCount: (insightRes?.status === 'ready' && typeof insightRes?.followers === 'number')
+              ? insightRes.followers
+              : (friendCount?.count ?? 0),
             activeScenarios: scenarioCount?.count ?? 0,
             messagesThisMonth: msgCount?.count ?? 0,
           },
@@ -90,18 +114,14 @@ lineAccounts.get('/api/line-accounts', async (c) => {
   }
 });
 
-// GET /api/line-accounts/:id - get single (secrets only for owner/admin)
+// GET /api/line-accounts/:id - get single (includes secrets)
 lineAccounts.get('/api/line-accounts/:id', async (c) => {
   try {
     const account = await getLineAccountById(c.env.DB, c.req.param('id'));
     if (!account) {
       return c.json({ success: false, error: 'LINE account not found' }, 404);
     }
-    const staff = c.get('staff');
-    const data = staff?.role === 'staff'
-      ? serializeLineAccount(account)
-      : serializeLineAccountFull(account);
-    return c.json({ success: true, data });
+    return c.json({ success: true, data: serializeLineAccountFull(account) });
   } catch (err) {
     console.error('GET /api/line-accounts/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -109,7 +129,7 @@ lineAccounts.get('/api/line-accounts/:id', async (c) => {
 });
 
 // POST /api/line-accounts - create
-lineAccounts.post('/api/line-accounts', requireRole('owner'), async (c) => {
+lineAccounts.post('/api/line-accounts', async (c) => {
   try {
     const body = await c.req.json<{
       channelId: string;
@@ -134,9 +154,9 @@ lineAccounts.post('/api/line-accounts', requireRole('owner'), async (c) => {
 });
 
 // PUT /api/line-accounts/:id - update
-lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
+lineAccounts.put('/api/line-accounts/:id', async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = c.req.param('id');
     const body = await c.req.json<{
       name?: string;
       channelAccessToken?: string;
@@ -162,9 +182,9 @@ lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
 });
 
 // DELETE /api/line-accounts/:id - delete
-lineAccounts.delete('/api/line-accounts/:id', requireRole('owner'), async (c) => {
+lineAccounts.delete('/api/line-accounts/:id', async (c) => {
   try {
-    await deleteLineAccount(c.env.DB, c.req.param('id')!);
+    await deleteLineAccount(c.env.DB, c.req.param('id'));
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/line-accounts/:id error:', err);

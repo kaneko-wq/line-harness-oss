@@ -32,12 +32,11 @@ function serializeForm(row: DbForm) {
   };
 }
 
-function serializeSubmission(row: DbFormSubmission & { friend_name?: string | null }) {
+function serializeSubmission(row: DbFormSubmission) {
   return {
     id: row.id,
     formId: row.form_id,
     friendId: row.friend_id,
-    friendName: row.friend_name || null,
     data: JSON.parse(row.data || '{}') as Record<string, unknown>,
     createdAt: row.created_at,
   };
@@ -257,6 +256,118 @@ forms.post('/api/forms/:id/submit', async (c) => {
         sideEffects.push(enrollFriendInScenario(db, friendId, form.on_submit_scenario_id));
       }
 
+      // Send staff notification for customer survey form
+      if (formId === '21ada3d2-9045-416e-94ad-e976ae190ac2') {
+        sideEffects.push(
+          (async () => {
+            const notificationUserId = c.env.NOTIFICATION_LINE_USER_ID;
+            if (!notificationUserId) {
+              console.log('Staff notification: NOTIFICATION_LINE_USER_ID not configured');
+              return;
+            }
+
+            try {
+              const { LineClient } = await import('@line-crm/line-sdk');
+              const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+
+              const customerName = `${submissionData.last_name || ''}${submissionData.first_name || ''}`.trim() || '未記入';
+              const store = submissionData.store || '未記入';
+              const staffName = submissionData.staff_name || '未記入';
+              const effectFeeling = submissionData.effect_feeling || '未記入';
+              const staffImpression = submissionData.staff_impression || '未記入';
+              const revisitIntent = submissionData.revisit_intent || '未記入';
+
+              const flex = {
+                type: 'bubble',
+                size: 'giga',
+                header: {
+                  type: 'box',
+                  layout: 'vertical',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '📋 新しいお客様アンケート回答',
+                      size: 'lg',
+                      weight: 'bold',
+                      color: '#1e293b',
+                    },
+                  ],
+                  paddingAll: '20px',
+                  backgroundColor: '#fef3c7',
+                },
+                body: {
+                  type: 'box',
+                  layout: 'vertical',
+                  contents: [
+                    {
+                      type: 'box',
+                      layout: 'vertical',
+                      margin: 'md',
+                      contents: [
+                        { type: 'text', text: 'お客様名', size: 'xxs', color: '#64748b' },
+                        { type: 'text', text: String(customerName), size: 'sm', color: '#1e293b', weight: 'bold', wrap: true },
+                      ],
+                    },
+                    {
+                      type: 'box',
+                      layout: 'vertical',
+                      margin: 'md',
+                      contents: [
+                        { type: 'text', text: '店舗', size: 'xxs', color: '#64748b' },
+                        { type: 'text', text: String(store), size: 'sm', color: '#1e293b', weight: 'bold', wrap: true },
+                      ],
+                    },
+                    {
+                      type: 'box',
+                      layout: 'vertical',
+                      margin: 'md',
+                      contents: [
+                        { type: 'text', text: 'スタッフ名', size: 'xxs', color: '#64748b' },
+                        { type: 'text', text: String(staffName), size: 'sm', color: '#1e293b', weight: 'bold', wrap: true },
+                      ],
+                    },
+                    {
+                      type: 'box',
+                      layout: 'vertical',
+                      margin: 'md',
+                      contents: [
+                        { type: 'text', text: '施術の効果を感じましたか', size: 'xxs', color: '#64748b' },
+                        { type: 'text', text: String(effectFeeling), size: 'sm', color: '#1e293b', weight: 'bold', wrap: true },
+                      ],
+                    },
+                    {
+                      type: 'box',
+                      layout: 'vertical',
+                      margin: 'md',
+                      contents: [
+                        { type: 'text', text: 'スタッフの印象', size: 'xxs', color: '#64748b' },
+                        { type: 'text', text: String(staffImpression), size: 'sm', color: '#1e293b', weight: 'bold', wrap: true },
+                      ],
+                    },
+                    {
+                      type: 'box',
+                      layout: 'vertical',
+                      margin: 'md',
+                      contents: [
+                        { type: 'text', text: '再来店希望', size: 'xxs', color: '#64748b' },
+                        { type: 'text', text: String(revisitIntent), size: 'sm', color: '#1e293b', weight: 'bold', wrap: true },
+                      ],
+                    },
+                  ],
+                  paddingAll: '20px',
+                },
+              };
+
+              const { buildMessage } = await import('../services/step-delivery.js');
+              await lineClient.pushMessage(notificationUserId, [buildMessage('flex', JSON.stringify(flex))]);
+              console.log('Staff notification sent for customer survey submission');
+            } catch (err) {
+              console.error('Staff notification failed:', err);
+            }
+          })(),
+        );
+      }
+
       // Send confirmation message with submitted data back to user
       sideEffects.push(
         (async () => {
@@ -265,21 +376,14 @@ forms.post('/api/forms/:id/submit', async (c) => {
           if (!friend?.line_user_id) { console.log('Form reply: no line_user_id'); return; }
           console.log('Form reply: sending to', friend.line_user_id);
           const { LineClient } = await import('@line-crm/line-sdk');
-          // Resolve access token from friend's account (multi-account support)
-          let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
-          if ((friend as unknown as Record<string, unknown>).line_account_id) {
-            const { getLineAccountById } = await import('@line-crm/db');
-            const account = await getLineAccountById(db, (friend as unknown as Record<string, unknown>).line_account_id as string);
-            if (account) accessToken = account.channel_access_token;
-          }
-          const lineClient = new LineClient(accessToken);
+          const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
 
           // Build Flex card showing their answers
           const entries = Object.entries(submissionData as Record<string, unknown>);
           const answerRows = entries.map(([key, value]) => {
             const field = form.fields ? (JSON.parse(form.fields) as Array<{ name: string; label: string }>).find((f: { name: string }) => f.name === key) : null;
             const label = field?.label || key;
-            const val = Array.isArray(value) ? value.join(', ') : (value !== null && value !== undefined && value !== '') ? String(value) : '-';
+            const val = Array.isArray(value) ? value.join(', ') : String(value || '-') || '-';
             return {
               type: 'box' as const, layout: 'vertical' as const, margin: 'md' as const,
               contents: [
@@ -304,11 +408,11 @@ forms.post('/api/forms/:id/submit', async (c) => {
               contents: [
                 ...answerRows,
                 { type: 'separator', margin: 'lg' },
-                ...(form.save_to_metadata ? [{ type: 'box', layout: 'vertical', margin: 'lg', backgroundColor: '#eff6ff', cornerRadius: 'md', paddingAll: '12px',
+                { type: 'box', layout: 'vertical', margin: 'lg', backgroundColor: '#eff6ff', cornerRadius: 'md', paddingAll: '12px',
                   contents: [
                     { type: 'text', text: 'メタデータに自動保存済み。今後の配信があなたに最適化されます。', size: 'xxs', color: '#2563EB', wrap: true },
                   ],
-                }] : []),
+                },
               ],
               paddingAll: '20px',
             },
